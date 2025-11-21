@@ -94,27 +94,54 @@ fileHistory/
 *.symbols.md
 ai-context-guide.md
 .claude
-# CLAUDE.md
-# active.instructions.md
-# implemented.instructions.md
-# vision.md
-# pitfalls.md
-# notes
-# test-files
-# reference_docs_and_examples
-# notes
-test-logs
+CLAUDE.md
+active.instructions.md
+implemented.instructions.md
+vision.md
+pitfalls.md
+notes/
+test-files/
+test-logs/
+reference_docs_and_examples/
 prp/
 
 # Project-specific ignores
-*.exe
 *.obj
 log/
 
+# Executables - all ignored (provided as GitHub releases)
+*.exe
+
 # Test-scripts: Keep source files but ignore generated files
-# Keep: *.java, *.bat, build-win.bat
+# Keep: *.java, *.bat, example-*.jrc, README-TESTING.md
 # Ignore: *.jar, *.aot, *.class, lib/
 test-scripts/*.jar
 test-scripts/*.aot
 test-scripts/*.class
 test-scripts/lib/
+
+# Config files: Ignore test configs in root, but keep examples in test-scripts
+*.jrc
+!test-scripts/example-*.jrc
+
+# Project Structure Rules - Keep Root Clean
+# Only these belong in project root:
+#   - launcher.c (source)
+#   - build-win.bat (build script)
+#   - README.md (documentation)
+#   - .gitignore
+#   - test-scripts/ (folder)
+#   - prp/ (folder, ignored)
+# Everything else should be in appropriate folders or ignored
+
+# Backup files (never commit)
+*_old*
+*_backup*
+*_new*
+*.bak
+*.orig
+*~
+
+# AOT cache files (generated at runtime)
+*.aot
+*.aot.config
