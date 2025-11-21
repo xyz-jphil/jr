@@ -88,7 +88,7 @@ log/
 *.temp
 fileHistory/
 
-# AI-generated documentation (should not be committed as either auto-generated or possibly user personal notes), README.md is usually the (default) publicly sharable documentation 
+# AI-generated documentation (should not be committed as either auto-generated or possibly user personal notes), README.md is usually the (default) publicly sharable documentation
 # User should manually configure these
 *.fullcode.md
 *.symbols.md
@@ -101,8 +101,20 @@ ai-context-guide.md
 # pitfalls.md
 # notes
 # test-files
-test-scripts/
 # reference_docs_and_examples
 # notes
 test-logs
 prp/
+
+# Project-specific ignores
+*.exe
+*.obj
+log/
+
+# Test-scripts: Keep source files but ignore generated files
+# Keep: *.java, *.bat, build-win.bat
+# Ignore: *.jar, *.aot, *.class, lib/
+test-scripts/*.jar
+test-scripts/*.aot
+test-scripts/*.class
+test-scripts/lib/

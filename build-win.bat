@@ -3,6 +3,9 @@ REM Build script for Microsoft Visual C++ compiler
 REM This script builds jarrunner.exe using MSVC
 
 echo Setting up MSVC environment...
+REM We are assuming that there is batch file called devcmd.bat which if run, will initialize this cmd's environment variables to support building using MSVC Build tools. 
+REM MS VC build tools are installable portably, this is far easier from downloading the full massive bundle, which takes space, wastes time, requires admin access (which not everyone always has).
+REM I used this - https://github.com/Data-Oriented-House/PortableBuildTools (the repo is now archived ... but it works for me)
 call devcmd.bat >nul 2>&1
 if %ERRORLEVEL% NEQ 0 (
     echo Warning: devcmd.bat not found in PATH, assuming MSVC env is already set

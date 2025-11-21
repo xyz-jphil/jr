@@ -2,9 +2,15 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <sys/stat.h>
+#include <time.h>
 
 #define MAX_PATH_LEN 32768
 #define MAX_CMD_LEN 32768
+
+// Base52 encoding (alphanumeric, case-sensitive without confusing chars)
+// Using: 0-9, A-Z (except I, O), a-z (except l, o)
+static const char BASE52_CHARS[] = "0123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz";
 
 // Hide console window as early as possible to prevent flash in GUI mode
 // This runs before main() via compiler-specific mechanisms
@@ -29,7 +35,7 @@
 #endif
 
 /**
- * Custom Java/JavaW Launcher
+ * Custom Java/JavaW Launcher with AOT Cache Support
  *
  * This launcher intelligently chooses between java.exe and javaw.exe based on execution context:
  * - If run from console/terminal -> uses java.exe (shows console output)
@@ -38,9 +44,154 @@
  * Features:
  * - Auto-detects Java in PATH
  * - Supports --java-home override
+ * - AOT cache support (JDK 25+) enabled by default, use --disable-aot to turn off
  * - Forwards all arguments and exit codes
  * - Proper error reporting
+ * - Performance timing measurements
  */
+
+// Global timing variables
+static LARGE_INTEGER g_perfFreq;
+static LARGE_INTEGER g_startTime;
+
+// Initialize high-resolution timer
+void initTimer() {
+    QueryPerformanceFrequency(&g_perfFreq);
+    QueryPerformanceCounter(&g_startTime);
+}
+
+// Get elapsed microseconds since start
+long long getElapsedMicros() {
+    LARGE_INTEGER now;
+    QueryPerformanceCounter(&now);
+    return ((now.QuadPart - g_startTime.QuadPart) * 1000000LL) / g_perfFreq.QuadPart;
+}
+
+// Encode 64-bit number to base52 string
+void encodeBase52(unsigned long long value, char* output, size_t maxLen) {
+    if (maxLen < 2) return;
+
+    if (value == 0) {
+        output[0] = BASE52_CHARS[0];
+        output[1] = '\0';
+        return;
+    }
+
+    char temp[32];
+    int pos = 0;
+
+    while (value > 0 && pos < 31) {
+        temp[pos++] = BASE52_CHARS[value % 52];
+        value /= 52;
+    }
+
+    // Reverse the string
+    int i;
+    for (i = 0; i < pos && i < (int)maxLen - 1; i++) {
+        output[i] = temp[pos - 1 - i];
+    }
+    output[i] = '\0';
+}
+
+// Get file size and last modified time
+int getFileInfo(const char* path, unsigned long long* size, unsigned long long* modTime) {
+    struct _stat64 st;
+    if (_stat64(path, &st) != 0) {
+        return 0;
+    }
+    *size = (unsigned long long)st.st_size;
+    *modTime = (unsigned long long)st.st_mtime;
+    return 1;
+}
+
+// Build AOT cache filename: <jarname>.<size_base52>.<modtime_base52>.aot
+void buildAOTCacheName(const char* jarPath, char* aotPath, size_t aotPathSize) {
+    unsigned long long size, modTime;
+    if (!getFileInfo(jarPath, &size, &modTime)) {
+        aotPath[0] = '\0';
+        return;
+    }
+
+    // Extract directory and filename without extension
+    char dirPath[MAX_PATH];
+    char baseName[MAX_PATH];
+
+    const char* lastSlash = strrchr(jarPath, '\\');
+    if (!lastSlash) lastSlash = strrchr(jarPath, '/');
+
+    if (lastSlash) {
+        size_t dirLen = lastSlash - jarPath;
+        strncpy(dirPath, jarPath, dirLen);
+        dirPath[dirLen] = '\0';
+        strcpy(baseName, lastSlash + 1);
+    } else {
+        dirPath[0] = '\0';
+        strcpy(baseName, jarPath);
+    }
+
+    // Remove .jar extension
+    char* dotPos = strrchr(baseName, '.');
+    if (dotPos) *dotPos = '\0';
+
+    // Encode size and modTime to base52
+    char sizeStr[32], modTimeStr[32];
+    encodeBase52(size, sizeStr, sizeof(sizeStr));
+    encodeBase52(modTime, modTimeStr, sizeof(modTimeStr));
+
+    // Build final path
+    if (dirPath[0]) {
+        snprintf(aotPath, aotPathSize, "%s\\%s.%s.%s.aot",
+                 dirPath, baseName, sizeStr, modTimeStr);
+    } else {
+        snprintf(aotPath, aotPathSize, "%s.%s.%s.aot",
+                 baseName, sizeStr, modTimeStr);
+    }
+}
+
+// Delete outdated AOT cache files for the given JAR
+void cleanupOldAOTFiles(const char* jarPath, const char* currentAOTPath) {
+    char dirPath[MAX_PATH];
+    char baseName[MAX_PATH];
+    char pattern[MAX_PATH];
+
+    // Extract directory and base filename
+    const char* lastSlash = strrchr(jarPath, '\\');
+    if (!lastSlash) lastSlash = strrchr(jarPath, '/');
+
+    if (lastSlash) {
+        size_t dirLen = lastSlash - jarPath;
+        strncpy(dirPath, jarPath, dirLen);
+        dirPath[dirLen] = '\0';
+        strcpy(baseName, lastSlash + 1);
+    } else {
+        GetCurrentDirectoryA(sizeof(dirPath), dirPath);
+        strcpy(baseName, jarPath);
+    }
+
+    // Remove .jar extension
+    char* dotPos = strrchr(baseName, '.');
+    if (dotPos) *dotPos = '\0';
+
+    // Build search pattern: <baseName>.*.*.aot
+    snprintf(pattern, sizeof(pattern), "%s\\%s.*.aot", dirPath, baseName);
+
+    // Find all matching AOT files
+    WIN32_FIND_DATAA findData;
+    HANDLE hFind = FindFirstFileA(pattern, &findData);
+
+    if (hFind != INVALID_HANDLE_VALUE) {
+        do {
+            char fullPath[MAX_PATH];
+            snprintf(fullPath, sizeof(fullPath), "%s\\%s", dirPath, findData.cFileName);
+
+            // Delete if it's not the current AOT file
+            if (_stricmp(fullPath, currentAOTPath) != 0) {
+                DeleteFileA(fullPath);
+            }
+        } while (FindNextFileA(hFind, &findData));
+        FindClose(hFind);
+    }
+}
 
 // Function to find java executable in PATH
 int findJavaInPath(const char* exeName, char* outPath, size_t outPathSize) {
@@ -163,6 +314,25 @@ char* extractJavaHome(const char* cmdLine) {
     return result;
 }
 
+// Function to check if --enable-aot flag is present
+int hasEnableAOTFlag(const char* cmdLine) {
+    return strstr(cmdLine, "--enable-aot") != NULL;
+}
+
+// Function to remove a flag from command line
+void removeFlag(char* cmdLine, const char* flag) {
+    char* flagPos = strstr(cmdLine, flag);
+    if (!flagPos) return;
+
+    char* argEnd = flagPos + strlen(flag);
+
+    // Skip trailing space
+    if (*argEnd == ' ') argEnd++;
+
+    // Remove by shifting the rest of the string
+    memmove(flagPos, argEnd, strlen(argEnd) + 1);
+}
+
 // Function to remove --java-home from command line
 void removeJavaHomeArg(char* cmdLine) {
     char* javaHomeArg = strstr(cmdLine, "--java-home");
@@ -220,6 +390,10 @@ int main(int argc, char** argv) {
     char javaPath[MAX_PATH] = {0};
     char cmdLine[MAX_CMD_LEN];
 
+    // Initialize high-resolution timer
+    initTimer();
+    long long startTimeMicros = getElapsedMicros();
+
     // Detect if we're in GUI mode (double-clicked) or console mode (terminal)
     BOOL guiMode = isGuiMode();
     BOOL hasConsole = !guiMode;
@@ -229,6 +403,13 @@ int main(int argc, char** argv) {
     LPSTR fullCmdLine = GetCommandLineA();
     strncpy(cmdLine, fullCmdLine, sizeof(cmdLine) - 1);
     cmdLine[sizeof(cmdLine) - 1] = '\0';
+
+    // AOT is enabled by default, check for --disable-aot flag
+    int enableAOT = 1; // Default: enabled
+    if (strstr(cmdLine, "--disable-aot") != NULL) {
+        enableAOT = 0;
+        removeFlag(cmdLine, "--disable-aot");
+    }
 
     // Check for --java-home override
     char* javaHome = extractJavaHome(cmdLine);
@@ -298,9 +479,76 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    // Build final command line: "full\path\to\java.exe" -jar <remaining args>
+    // Extract the JAR file path for AOT cache handling
+    char jarFilePath[MAX_PATH] = {0};
+    char* jarEnd = jarArgs;
+
+    // Parse JAR file path (handle quoted and unquoted paths)
+    if (*jarArgs == '"') {
+        jarArgs++;
+        jarEnd = strchr(jarArgs, '"');
+        if (jarEnd) {
+            size_t len = jarEnd - jarArgs;
+            if (len < sizeof(jarFilePath)) {
+                strncpy(jarFilePath, jarArgs, len);
+                jarFilePath[len] = '\0';
+            }
+            jarEnd++; // Skip closing quote
+        }
+        jarArgs--; // Restore for command line building
+    } else {
+        jarEnd = strchr(jarArgs, ' ');
+        if (!jarEnd) jarEnd = jarArgs + strlen(jarArgs);
+        size_t len = jarEnd - jarArgs;
+        if (len < sizeof(jarFilePath)) {
+            strncpy(jarFilePath, jarArgs, len);
+            jarFilePath[len] = '\0';
+        }
+    }
+
+    // Build AOT cache path if enabled
+    char aotCachePath[MAX_PATH] = {0};
+    char aotArg[MAX_PATH + 50] = {0};
+
+    if (enableAOT && jarFilePath[0]) {
+        buildAOTCacheName(jarFilePath, aotCachePath, sizeof(aotCachePath));
+
+        if (aotCachePath[0]) {
+            // Clean up old AOT files
+            cleanupOldAOTFiles(jarFilePath, aotCachePath);
+
+            // Check if AOT cache exists
+            DWORD attrib = GetFileAttributesA(aotCachePath);
+            BOOL aotExists = (attrib != INVALID_FILE_ATTRIBUTES && !(attrib & FILE_ATTRIBUTE_DIRECTORY));
+
+            if (aotExists) {
+                // Use existing cache
+                snprintf(aotArg, sizeof(aotArg), "-XX:AOTCache=\"%s\"", aotCachePath);
+            } else {
+                // Create new cache
+                snprintf(aotArg, sizeof(aotArg), "-XX:AOTCacheOutput=\"%s\"", aotCachePath);
+            }
+        }
+    }
+
+    // Measure time before JVM invocation
+    long long beforeJVMInvokeMicros = getElapsedMicros();
+
+    // Build timing system properties
+    char timingProps[512];
+    snprintf(timingProps, sizeof(timingProps),
+             "-Djarrunner.start.micros=%lld -Djarrunner.beforejvm.micros=%lld",
+             startTimeMicros, beforeJVMInvokeMicros);
+
+    // Build final command line: "full\path\to\java.exe" [timing] [aot] -jar <remaining args>
     char finalCmdLine[MAX_CMD_LEN];
-    snprintf(finalCmdLine, sizeof(finalCmdLine), "\"%s\" -jar %s", javaPath, jarArgs);
+    if (aotArg[0]) {
+        snprintf(finalCmdLine, sizeof(finalCmdLine), "\"%s\" %s %s -jar %s",
+                 javaPath, timingProps, aotArg, jarArgs);
+    } else {
+        snprintf(finalCmdLine, sizeof(finalCmdLine), "\"%s\" %s -jar %s",
+                 javaPath, timingProps, jarArgs);
+    }
 
     // Setup startup info
     STARTUPINFOA si = {sizeof(si)};
